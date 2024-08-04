@@ -1,0 +1,15 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  promote_version:
+    runs-on: ubuntu-latest
+    steps: 
+      - uses: actions/checkout@v3
+    if: 1 == 1
+    # if: ${{ always() }}
