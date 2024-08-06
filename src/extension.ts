@@ -10,7 +10,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(async (event) => await changeDocListener(event.document, collection)));
 }
 
-interface PossibleYaml {
+interface PossibleCiYaml {
+	name: string
+	'run-name': '${{ inputs.run_name }}'
 	jobs: {
 		promote_version: {
 			if: '${{ always() }}'
@@ -18,16 +20,25 @@ interface PossibleYaml {
 	}
 }
 
-const possibleYamlSchema: JSONSchemaType<PossibleYaml> = {
-	type: "object",
+interface PossibleCdYaml {
+	// TODO
+}
+
+const possibleCiYamlSchema: JSONSchemaType<PossibleCiYaml> = {
+	type: 'object',
 	properties: {
+		name: { type: 'string', minLength: 1 },
+		'run-name': {
+			type: 'string',
+			enum: ['${{ inputs.run_name }}']
+		},
 		jobs: {
 			type: 'object',
 			properties: {
 				promote_version: {
-					type: "object",
+					type: 'object',
 					properties: {
-						if: { type: 'string', enum: ["${{ always() }}"] },
+						if: { type: 'string', enum: ['${{ always() }}'] },
 					},
 					required: ['if'],
 					additionalProperties: true
@@ -37,33 +48,49 @@ const possibleYamlSchema: JSONSchemaType<PossibleYaml> = {
 			additionalProperties: true
 		},
 	},
-	required: ["jobs"],
+	required: ['jobs', 'run-name', 'name'],
 	additionalProperties: true
 }
 
-const validate = ajv.compile(possibleYamlSchema)
+const validationLookup = {
+	ci: ajv.compile(possibleCiYamlSchema)
+}
 
 async function changeDocListener(document?: vscode.TextDocument, collection?: vscode.DiagnosticCollection) {
 	if (!document) return
+	const filePath = document.fileName.split(/(\\|\/)/g).pop()
+	if (!filePath) return
+	if (!filePath.match(/(\.yaml|\.yml)/)) {
+		// not yaml || yml; skip
+		return
+	}
+	// something like ci.yml, cd.yml, etc.
+	const filename = filePath.substring(filePath.lastIndexOf("/") + 1, filePath.lastIndexOf("."));
+	const validator = validationLookup[filename as keyof typeof validationLookup]
+	if (!validator) {
+		// workflow name not yet supported; skip
+		return
+	}
 	const docText = document.getText?.();
-	const data: PossibleYaml = parseYaml(docText)
-	const valid = validate(data)
+	const ymlJson = parseYaml(docText)
+	const valid = validator(ymlJson)
 	if (valid) {
 		console.log('no problems detected; yaml good!');
 		collection?.clear();
 		return;
 	}
-	validate.errors?.map((error) => {
-		const keyword = error.instancePath.split("/").pop()!
+	const errors = validator.errors?.map((error) => {
+		const keyword = error.instancePath.split('/').pop()!
 		const [line, startOfLine, eol] = findLinePosition(docText.split('\n'), keyword)!
-		collection?.set(document.uri, [{
+		return {
 			code: '',
-			message: `malformed YAML: ${error.message}: ${error.instancePath}`,
+			message: `malformed YAML: ${error.message} ${error.instancePath}`,
 			range: new vscode.Range(new vscode.Position(line, startOfLine), new vscode.Position(line, eol)),
 			severity: vscode.DiagnosticSeverity.Error,
 			source: humanReadableError(error),
-		}]);
+		}
 	})
+	collection?.set(document.uri, errors);
 }
 
 function humanReadableError(error: ErrorObject) {
